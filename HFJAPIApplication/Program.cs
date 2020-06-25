@@ -39,7 +39,7 @@ namespace HFJAPIApplication
 
                     //var path = Directory.GetCurrentDirectory() + "\\log4net.config"; 
                     //不带参数：表示log4net.config的配置文件就在应用程序根目录下，也可以指定配置文件的路径
-                    loggingbuilder.AddLog4Net();
+                    //loggingbuilder.AddLog4Net();
                 }).UseStartup<Startup>();
                 //return WebHost.CreateDefaultBuilder(args).UseUrls("http://*:5000").UseStartup<Startup>();
             }
@@ -60,7 +60,7 @@ namespace HFJAPIApplication
 
                     //var path = Directory.GetCurrentDirectory() + "\\log4net.config"; 
                     //不带参数：表示log4net.config的配置文件就在应用程序根目录下，也可以指定配置文件的路径
-                    loggingbuilder.AddLog4Net();
+                   // loggingbuilder.AddLog4Net();
                 }).UseConfiguration(configuration)
                         .UseStartup<Startup>();
             }

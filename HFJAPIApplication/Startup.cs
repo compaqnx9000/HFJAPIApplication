@@ -43,12 +43,15 @@ namespace HFJAPIApplication
             });
             services.Configure<MongoSetting>(Configuration.GetSection("MongoSetting")).AddMvc().SetCompatibilityVersion(CompatibilityVersion.Version_2_2);
             services.Configure<ServiceUrls>(Configuration.GetSection("ServiceUrls")).AddMvc().SetCompatibilityVersion(CompatibilityVersion.Version_2_2);
-
+            //double dis1 = Utils.Translate.GetDistance(33.27967, 110.74078, 33, 111.2);
+            //double dis2 = Utils.Translate.GetDistance(33.27967, 110.74078, 33.2, 110.6);
+            //double dis3 = Utils.Translate.GetDistance(33.27967, 110.74078, 33.24, 110.72);
             //services.AddMvc().SetCompatibilityVersion(CompatibilityVersion.Version_2_2);
             services.AddSingleton<IMongoService, MongoService>();
             services.AddSingleton<IDamageAnalysisService, DamageAnalysisService>();
 
-
+            services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService,
+               HostedService>();
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

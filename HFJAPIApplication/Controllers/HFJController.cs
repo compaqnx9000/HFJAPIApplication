@@ -22,7 +22,7 @@ namespace HFJAPIApplication.Controllers
     public class HFJController : ControllerBase
     {
         private readonly IDamageAnalysisService _analysisService;
-
+        private static int count = 0;
 
         public HFJController(IDamageAnalysisService analysisService)
         {
@@ -36,9 +36,11 @@ namespace HFJAPIApplication.Controllers
         [HttpGet("nuclearthreatanalysis/missileinfo")]
         public ActionResult Missileinfo()
         {
+            count++;
+
             List<MissileVO> missiles = new List<MissileVO>();
 
-            missiles.Add(new MissileVO("6001", "W78", 0.01, 110.79119, 33.345433, 10.11, 60, 12.12, 1000.11,"111-111-111-111"));//Safe
+            missiles.Add(new MissileVO("6001", "W78", 0.01, 110.79119, 33.345433, 10.11, 60, 12.12, 1000.11, "111-111-111-111"));//Safe
             //missiles.Add(new MissileVO("1001", "W78", 0.01, 110.79119, 33.345433, 10.11, 40, 12.12, 1000.11, "111-111-111-111"));//Safe
             //missiles.Add(new MissileVO("2001", "W78", 10, 110.79119, 33.345433, 10.11, 30, 12.12, 1000.11));//Light
             //missiles.Add(new MissileVO("3001", "W88", 10, 110.79119, 33.345433, 10.11, 50, 12.12, 1000.11));//Light
@@ -49,9 +51,11 @@ namespace HFJAPIApplication.Controllers
             //missiles.Add(new MissileVO("2001", "W88", 100, 110.79119, 33.345433, 20.22, 30, 13.13, 2000.22));//Heavy
 
             missiles.Add(new MissileVO("3001", "W98", 50000, 110.79119, 33.345433, 60.96, 30, 13.13, 2000.22, "222-222-222-222"));//Light    
-            //missiles.Add(new MissileVO("3001", "W98", 500000, 110.79119, 33.345433, 60.96, 30, 13.13, 2000.22));//Heavy    
-            //missiles.Add(new MissileVO("3001", "W98", 100000000, 110.79119, 33.345433, 60.96, 60, 13.13, 2000.22));//Heavy，空爆200英尺
-            //missiles.Add(new MissileVO("3001", "W98", 100000000, 110.79119, 33.345433, 0, 90, 13.13, 2000.22));//Destory，地爆
+                                                                                                                                  //missiles.Add(new MissileVO("3001", "W98", 500000, 110.79119, 33.345433, 60.96, 30, 13.13, 2000.22));//Heavy    
+                                                                                                                                  //missiles.Add(new MissileVO("3001", "W98", 100000000, 110.79119, 33.345433, 60.96, 60, 13.13, 2000.22));//Heavy，空爆200英尺
+
+            if (count > 5)
+                missiles.Add(new MissileVO("3001", "W98", 100000000, 110.79119, 33.345433, 0, 90, 13.13, 2000.22, "5435-2345-2345-44"));//Destory，地爆
 
             //{
             //    "missileID": "1001",
@@ -86,6 +90,20 @@ namespace HFJAPIApplication.Controllers
                 return_data = r
             });
         }
+
+
+        [HttpGet("guid")]
+        public ActionResult guid()
+        {
+            var r = _analysisService.Damage();
+            return new JsonResult(new
+            {
+                return_status = 0,
+                return_msg = "",
+                return_data = r
+            });
+        }
+
         [HttpPost("damage/select")]
         public ActionResult Select([FromBody] FilterBO bo)
         {

@@ -7,7 +7,7 @@ namespace HFJAPIApplication.Mock
 {
     public class MissileVO
     {
-        public MissileVO(string missileID, string warHeadNo, double yield, double lon, double lat, double alt, double impactTimeUTC, double measurement, double attackAccuracy,string nonce)
+        public MissileVO(string missileID, string warHeadNo, double yield, double lon, double lat, double alt, double impactTimeUTc, double measurement, double attackAccuracy,string nonce)
         {
             this.missileID = missileID;
             this.warHeadNo = warHeadNo;
@@ -15,7 +15,7 @@ namespace HFJAPIApplication.Mock
             this.lon = lon;
             this.lat = lat;
             this.alt = alt;
-            this.impactTimeUTC = impactTimeUTC;
+            this.impactTimeUTc = impactTimeUTc;
             this.measurement = measurement;
             this.attackAccuracy = attackAccuracy;
             this.nonce = nonce;
@@ -27,7 +27,7 @@ namespace HFJAPIApplication.Mock
         public double lon { get; set; }
         public double lat { get; set; }
         public double alt { get; set; }
-        public double impactTimeUTC { get; set; }
+        public double impactTimeUTc { get; set; }
         public double measurement { get; set; }
         public double attackAccuracy { get; set; }
         public string nonce { get; set; }

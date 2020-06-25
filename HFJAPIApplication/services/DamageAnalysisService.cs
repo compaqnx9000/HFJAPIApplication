@@ -40,7 +40,8 @@ namespace HFJAPIApplication.services
             if(_firstRun)
             {
                 _firstRun = false;
-                 Damage();
+                //Damage();
+                Thread.Sleep(1000);
             }
             
             
@@ -75,7 +76,7 @@ namespace HFJAPIApplication.services
 
             _config = options.Value;
 
-            this._logger = logger;
+            //this._logger = logger;
 
             _infos = _mongoService.GetInfos();
 
@@ -99,10 +100,11 @@ namespace HFJAPIApplication.services
 
             //导弹接口
             string url = _config.MissileInfo;//http://localhost:5000/nuclearthreatanalysis/missileinfo
+           // _logger.LogInformation("URL:{0}", url);
             try
             {
                 Task<string> s = GetAsyncJson(url);
-                s.Wait(1000);
+                s.Wait();
                 JObject jo = (JObject)Newtonsoft.Json.JsonConvert.DeserializeObject(s.Result);
 
                 dds = new List<MissileVO>();
@@ -114,31 +116,33 @@ namespace HFJAPIApplication.services
                     double lon = Double.Parse(obj["lon"].ToString());
                     double lat = Double.Parse(obj["lat"].ToString());
                     double alt = Double.Parse(obj["alt"].ToString());
-                    double impactTimeUTC = Double.Parse(obj["impactTimeUTC"].ToString());
+                    double impactTimeUTC = Double.Parse(obj["impactTimeUtc"].ToString());//报错了
+                                                             
                     double measurement = Double.Parse(obj["measurement"].ToString());
                     double attackAccuracy = Double.Parse(obj["attackAccuracy"].ToString());
                     string nonce = obj["nonce"].ToString();
 
-                    _logger.LogInformation(string.Format("【missileID】：{0},【warHeadNo】：{1}," +
-                        "【yield】：{2},【lon】：{3},【lat】：{4},【alt】：{5},,【impactTimeUTC】：{6}",
+                    //_logger.LogInformation(string.Format("【missileID】：{0},【warHeadNo】：{1}," +
+                    //    "【yield】：{2},【lon】：{3},【lat】：{4},【alt】：{5},,【impactTimeUTC】：{6}",
 
-                        missileID, warHeadNo,yield,lon, lat, alt, impactTimeUTC));
+                   //     missileID, warHeadNo,yield,lon, lat, alt, impactTimeUTC));
 
                     dds.Add(new MissileVO(missileID, warHeadNo, yield, lon, lat, alt, impactTimeUTC, measurement, attackAccuracy, nonce));
                 }
 
                 // 按時間戳排序
-                dds.Sort((a, b) => a.impactTimeUTC.CompareTo(b.impactTimeUTC));
+                dds.Sort((a, b) => a.impactTimeUTc.CompareTo(b.impactTimeUTc));
 
 
             }
             catch (Exception)
             {
+                //_logger.LogInformation("DD访问接口出错");
 
             }
             finally
             {
-
+                Console.WriteLine("DD访问接口出错");
             }
 
             /****************************************
@@ -172,7 +176,7 @@ namespace HFJAPIApplication.services
                         if (result != DamageEnumeration.Safe)
                         {
                             // 只记录照成损伤的DD
-                            damageVO.missileList.Add(new MissileListVO(dd.missileID, dd.impactTimeUTC, (int)result));
+                            damageVO.missileList.Add(new MissileListVO(dd.missileID, dd.impactTimeUTc, (int)result));
                         }
                     }
                     if (damageVO.missileList.Count == 0)
@@ -219,7 +223,7 @@ namespace HFJAPIApplication.services
                                                         info.thermal_radiation_02, info.thermal_radiation_03);
                         var result3 = NuclearRadiation(dis, dd.yield / 1000, info.alt * 3.2808399, info.nuclear_radiation_01,
                                                         info.nuclear_radiation_02, info.nuclear_radiation_03);
-                        var result4 = NuclearPulse(dis, dd.yield, info.alt/1000, info.nuclear_pulse_01,
+                        var result4 = NuclearPulse(dis/1000, dd.yield, info.alt/1000, info.nuclear_pulse_01,
                                                      info.nuclear_pulse_02, info.nuclear_pulse_03);
                         var result12 = (DamageEnumeration)Math.Max(result1.GetHashCode(), result2.GetHashCode());
                         var result34 = (DamageEnumeration)Math.Max(result3.GetHashCode(), result4.GetHashCode());
@@ -229,7 +233,7 @@ namespace HFJAPIApplication.services
                         if (result != DamageEnumeration.Safe)
                         {
                             // 只记录照成损伤的DD
-                            damageVO.missileList.Add(new MissileListVO(dd.missileID, dd.impactTimeUTC, (int)result));
+                            damageVO.missileList.Add(new MissileListVO(dd.missileID, dd.impactTimeUTc, (int)result));
                         }
                     }
                     if (damageVO.missileList.Count == 0)
@@ -263,10 +267,35 @@ namespace HFJAPIApplication.services
                         }
                     }
                 }
+
+                // 时间片去重
+                for(int i=damageVO.statusTimeRanges.Count-1;i>=0;i--)
+                {
+                    if (damageVO.statusTimeRanges[i].StartTimeUtc == damageVO.statusTimeRanges[i].EndTimeUtc)
+                        damageVO.statusTimeRanges.RemoveAt(i);
+                }
+
                 _damageVOs.Add(damageVO);
             }
 
             rwl.EnterWriteLock();
+
+            // 判断“_damageVOs”与“_reallyDamageResult”的“missileList”和“statusTimeRanges”是否有变化？
+            if (_damageVOs.Count() == _reallyDamageResult.Count())
+            {
+                for (int i = 0; i < _damageVOs.Count(); i++)
+                {
+                    DamageVO previousDamageVO = _reallyDamageResult[i];
+                    DamageVO currentDamageVO = _damageVOs[i];
+
+                    if (previousDamageVO.Equals(currentDamageVO))
+                        currentDamageVO.nonce = previousDamageVO.nonce;
+
+                }
+            }
+
+
+
             _reallyDamageResult.Clear();
             for (int i = 0; i < _damageVOs.Count; i++)
             {
@@ -275,7 +304,7 @@ namespace HFJAPIApplication.services
 
             }
             rwl.ExitWriteLock();
-            return null;
+            return _damageVOs;
         }
 
 
@@ -305,7 +334,7 @@ namespace HFJAPIApplication.services
             {
                 Damage();
                 //Thread.Sleep(5);//如果不延时，将占用CPU过高  
-                Thread.Sleep(1000);//如果不延时，将占用CPU过高  
+                Thread.Sleep(_config.Interval);//如果不延时，将占用CPU过高  
             }
         }
 
@@ -370,10 +399,6 @@ namespace HFJAPIApplication.services
             double r1 = GetNuclearPulseRadius(yield, km, vm01);
             double r2 = GetNuclearPulseRadius(yield, km, vm02);
             double r3 = GetNuclearPulseRadius(yield, km, vm03);
-
-            r1 *= 1000;
-            r2 *= 1000;
-            r3 *= 1000;
 
             if (dis <= r3) return DamageEnumeration.Destroy;
             if (dis <= r2) return DamageEnumeration.Heavy;

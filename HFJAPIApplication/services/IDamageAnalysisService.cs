@@ -18,5 +18,7 @@ namespace HFJAPIApplication.services
 
         Task<string> GetStuInfoAsync(string stuNo);
 
+        List<DamageVO> Damage();
+
     }
 }
