@@ -18,5 +18,7 @@ namespace HFJAPIApplication.services
         List<SelectVO> Select(FilterBO bo);
         int InfoChanged();
 
+        List<DamageVO> Damage();
+
     }
 }
