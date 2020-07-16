@@ -8,5 +8,6 @@ namespace HFJAPIApplication
     public class ServiceUrls
     {
         public string MissileInfo { get; set; }
+        public int Interval { get; set; }
     }
 }

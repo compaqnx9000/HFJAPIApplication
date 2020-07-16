@@ -24,6 +24,8 @@ namespace HFJAPIApplication.Controllers
         [HttpGet("log")]
         public IActionResult Index()
         {
+            
+
             this._Factory.CreateLogger<LogTestController>().LogError("这里出现了一个错误");
             this._logger.LogError("出现了严重的错误！");
 

@@ -16,6 +16,7 @@ namespace HFJAPIApplication.VO
         public string launchUnit { get; set; }
         public string platform { get; set; }
         public string warZone { get; set; }
+        public string warBase { get; set; }
         public string combatZone { get; set; }
         public string brigade { get; set; }
         public string platoon { get; set; }

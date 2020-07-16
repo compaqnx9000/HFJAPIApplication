@@ -44,5 +44,12 @@ namespace HFJAPIApplication.BO
         public double missileNum { get; set; }
         [JsonIgnore]
         public List<string> nuclear_warheads { get; set; }
+        //07-01新加的
+        public double prepareTime { get; set; }
+        public double targetBindingTime { get; set; }
+        public double defenseBindingTime { get; set; }
+        //07-11新加的
+        public double fireRange { get; set; }
+
     }
 }
