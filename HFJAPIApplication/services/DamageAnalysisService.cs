@@ -118,7 +118,8 @@ namespace HFJAPIApplication.Services
                     {
                         attacks.Add(new AttackVO(info.launchUnit, info.platform,
                                                     info.warZone, dis,
-                                                    info.warBase, info.brigade));
+                                                    info.warBase, info.brigade,
+                                                    info.name,info.useState==null?"未知": info.useState));
                     }
                 }
             }
