@@ -61,6 +61,8 @@ namespace HFJAPIApplication.VO
         public LaunchUnitInfoVO launchUnitInfo { get; set; }
         public List<TimeRange> timeRanges { get; set; }
         public string nonce { get; set; }
+        public string name { get; set; } // 2020-10-11 add
+        public string useState { get; set; }// 2020-10-13 add
 
         public override bool Equals(object obj)
         {

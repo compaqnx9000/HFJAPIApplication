@@ -7,6 +7,7 @@ using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using NLog.Web;
 
 namespace HFJAPIApplication
 {
@@ -14,7 +15,24 @@ namespace HFJAPIApplication
     {
         public static void Main(string[] args)
         {
-            CreateWebHostBuilder(args).Build().Run();
+            //这里添加Nlog
+            var logger = NLog.Web.NLogBuilder.ConfigureNLog("nlog.config").GetCurrentClassLogger();
+            try
+            {
+                //测试Nlog日志输出
+                logger.Debug("init main");
+                CreateWebHostBuilder(args).Build().Run();
+            }
+            catch (Exception exception)
+            {
+                logger.Error(exception, "Stopped program because of exception");
+                throw;
+            }
+            finally
+            {
+                NLog.LogManager.Shutdown();
+            }
+            //CreateWebHostBuilder(args).Build().Run();
         }
 
         //public static IWebHostBuilder CreateWebHostBuilder(string[] args) =>
@@ -28,19 +46,8 @@ namespace HFJAPIApplication
 
             if (isDevelopment)
             {
-                return WebHost.CreateDefaultBuilder(args).ConfigureLogging((context, loggingbuilder) =>
-                {
-                    //该方法需要引入Microsoft.Extensions.Logging名称空间
-
-                    loggingbuilder.AddFilter("System", LogLevel.Warning); //过滤掉系统默认的一些日志
-                    loggingbuilder.AddFilter("Microsoft", LogLevel.Warning);//过滤掉系统默认的一些日志
-
-                    //添加Log4Net
-
-                    //var path = Directory.GetCurrentDirectory() + "\\log4net.config"; 
-                    //不带参数：表示log4net.config的配置文件就在应用程序根目录下，也可以指定配置文件的路径
-                    //loggingbuilder.AddLog4Net();
-                }).UseStartup<Startup>();
+                return WebHost.CreateDefaultBuilder(args)
+                    .UseStartup<Startup>().UseNLog();
                 //return WebHost.CreateDefaultBuilder(args).UseUrls("http://*:5000").UseStartup<Startup>();
             }
             else
@@ -49,22 +56,10 @@ namespace HFJAPIApplication
                                         .AddJsonFile("host.json")
                                         .Build();
 
-                return WebHost.CreateDefaultBuilder(args).ConfigureLogging((context, loggingbuilder) =>
-                {
-                    //该方法需要引入Microsoft.Extensions.Logging名称空间
-
-                    loggingbuilder.AddFilter("System", LogLevel.Warning); //过滤掉系统默认的一些日志
-                    loggingbuilder.AddFilter("Microsoft", LogLevel.Warning);//过滤掉系统默认的一些日志
-
-                    //添加Log4Net
-
-                    //var path = Directory.GetCurrentDirectory() + "\\log4net.config"; 
-                    //不带参数：表示log4net.config的配置文件就在应用程序根目录下，也可以指定配置文件的路径
-                   // loggingbuilder.AddLog4Net();
-                }).UseConfiguration(configuration)
-                        .UseStartup<Startup>();
+                return WebHost.CreateDefaultBuilder(args)
+                    .UseConfiguration(configuration)
+                        .UseStartup<Startup>().UseNLog();
             }
-
 
         }
     }

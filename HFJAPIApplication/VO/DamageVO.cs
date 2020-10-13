@@ -1,4 +1,6 @@
-﻿using Newtonsoft.Json;
+﻿using MongoDB.Bson;
+using Newtonsoft.Json;
+using NLog.LayoutRenderers;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -34,6 +36,7 @@ namespace HFJAPIApplication.VO
             result.lat = lat;
             result.alt = alt;
             result.prepareTime = prepareTime;
+            result.name = name; 
             return result;
         }
 
@@ -101,6 +104,15 @@ namespace HFJAPIApplication.VO
         // add 07-03 
         [JsonIgnore]
         public double prepareTime { get; set; }
+        [JsonIgnore]
+        public Dictionary<string, List<string>> tags { get; set; }
+        [JsonIgnore]
+        public string id { get; set; }
+        public string name { get; set; }//0818 add
+
+        public string useState { get; set; }//2020-10-13 add
+
+
         public static bool operator ==(DamageVO left, DamageVO right)
         {
             return EqualityComparer<DamageVO>.Default.Equals(left, right);

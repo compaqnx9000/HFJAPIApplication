@@ -1,30 +1,39 @@
 ﻿using HFJAPIApplication.BO;
 using HFJAPIApplication.Mock;
-using HFJAPIApplication.Services;
 using HFJAPIApplication.VO;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using MongoDB.Bson.IO;
+using NetTopologySuite.Geometries;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net.Http;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace HFJAPIApplication.services
+namespace HFJAPIApplication.Services
 {
-    public class DamageAnalysisService:IDamageAnalysisService
+    public class DamageAnalysisService : IDamageAnalysisService, IDisposable
     {
+        public IConfiguration Configuration { get; }
+
+        private Task task;
+        private CancellationTokenSource cts = new CancellationTokenSource();
+
         public static object _damageLocker = new object();//添加一个对象作为锁
         public static object _counterLocker = new object();//添加一个对象作为锁
         public static object _infoLocker = new object();//添加一个对象作为锁
 
         private readonly IMongoService _mongoService;
-        private ServiceUrls _config;
-        private static List<BO.InfoBO> _infos;
+        private static List<InfoBO> _infos;
+        private static List<OverlayBO> _overlays;
+        //private static List<ConfigBO> _configs;
+        private static Dictionary<string, int> additionTable = new Dictionary<string, int>();//加法表
+
         //private static ConcurrentBag<DamageVO> _damageVOs = new ConcurrentBag<DamageVO>();
         //private static ConcurrentBag<DamageVO> _returnDamageVOs = new ConcurrentBag<DamageVO>();
 
@@ -34,13 +43,58 @@ namespace HFJAPIApplication.services
         // 0715现在damage接口要保留一个8种类型的list，因为select接口现在需要8种类型了
         private static List<DamageVO> _noFilterDamageVOs = new List<DamageVO>();
 
-
         private static volatile List<CounterVO> _counterVOs = new List<CounterVO>();
         private static volatile List<CounterVO> _returnCounterVOs = new List<CounterVO>();
 
 
         public ILogger<DamageAnalysisService> _logger = null;
         private static bool _firstRun = true;
+
+        private static string _returnArea = "";//缓存damagearea/area接口
+
+        public DamageAnalysisService(IMongoService mongoService,
+                                ILogger<DamageAnalysisService> logger,
+                                IConfiguration configuration)
+        {
+            Configuration = configuration;
+
+            _mongoService = mongoService ??
+               throw new ArgumentNullException(nameof(mongoService));
+
+
+            this._logger = logger;
+
+            _infos = _mongoService.GetInfos();
+            //_configs = _mongoService.GetConfigs();
+
+
+            _overlays = _mongoService.GetOverlays();
+            foreach (var overlay in _overlays)
+            {
+
+                additionTable.Add(Damage2String(overlay.addend) + Damage2String(overlay.augend),
+                    Int32.Parse(Damage2String(overlay.result)));
+
+            }
+
+            //创建线程，并启动
+            //Thread th = new Thread(new ThreadStart(ThreadMethod));
+            //th.Start();
+
+            task = new Task(Run, cts.Token, TaskCreationOptions.LongRunning);
+            task.Start();
+        }
+        public void Dispose()
+        {
+            cts.Cancel();
+        }
+        private string Damage2String(string s)
+        {
+            if (s == "轻微") return "1";
+            else if (s == "中度") return "2";
+            else if (s == "重度") return "3";
+            return "0";
+        }
 
 
         public int InfoChanged()
@@ -68,7 +122,7 @@ namespace HFJAPIApplication.services
                     }
                 }
             }
-                
+
 
             return attacks;
         }
@@ -89,12 +143,12 @@ namespace HFJAPIApplication.services
                 if (damageVO.platform != "发射井" && damageVO.platform != "发射车")
                     continue;
 
-                StatusTimeRangesVO statusTime =  damageVO.statusTimeRanges.Where(it => it.Status > 1).FirstOrDefault();
+                StatusTimeRangesVO statusTime = damageVO.statusTimeRanges.Where(it => it.Status > 1).FirstOrDefault();
                 if (statusTime != null)
                 {
                     long startTimeUtc = (long)statusTime.StartTimeUtc;
                     DateTime? dt = MyCore.Utils.DataTimeUtil.ToDateTime(startTimeUtc);
-                    DateTime? dt0 =null;
+                    DateTime? dt0 = null;
                     double prepareTimeUtc = 0;
 
                     if (dt != null)
@@ -111,6 +165,9 @@ namespace HFJAPIApplication.services
                         counter.timeRanges.Add(new TimeRange(prepareTimeUtc, startTimeUtc, 1));
                         counter.timeRanges.Add(new TimeRange(startTimeUtc, MyCore.Utils.Const.TimestampMax, 2));
                         counter.nonce = Guid.NewGuid().ToString();
+                        counter.name = damageVO.name;//2020-10-11
+                        counter.useState = damageVO.useState == null ? "未知" : damageVO.useState;//2020-10-13
+
 
                         _counterVOs.Add(counter);
                     }
@@ -122,6 +179,9 @@ namespace HFJAPIApplication.services
                     counter.launchUnitInfo = damageVO.launchUnitInfo;
                     counter.timeRanges.Add(new TimeRange(0, MyCore.Utils.Const.TimestampMax, 0));
                     counter.nonce = Guid.NewGuid().ToString();
+                    counter.name = damageVO.name;//2020-10-11
+                    counter.useState = damageVO.useState == null ? "未知" : damageVO.useState;//2020-10-13
+
                     _counterVOs.Add(counter);
                 }
             }
@@ -144,56 +204,21 @@ namespace HFJAPIApplication.services
                 _returnCounterVOs = Clone(_counterVOs);
             }
         }
+
         public List<DamageVO> GetDamageResult()
         {
             //Thread.Sleep(5000);
-            if(_firstRun)
+            if (_firstRun)
             {
                 _firstRun = false;
                 Thread.Sleep(1000);
             }
-            
+
             return _returnDamageVOs;
-            
-        }
-        public virtual async Task<string> GetStuInfoAsync(string stuNo)
-        {
-            return await GetStuInfoAsync2(stuNo);
+
         }
 
-        public virtual async Task<string> GetStuInfoAsync2(string stuNo)
-        {
-            return await Task.Run(() => this.GetDamageResult().ToString());
-        }
-        //public static ConcurrentBag<T> Clone<T>(object List)
-        //{
-        //    using (Stream objectStream = new MemoryStream())
-        //    {
-        //        IFormatter formatter = new BinaryFormatter();
-        //        formatter.Serialize(objectStream, List);
-        //        objectStream.Seek(0, SeekOrigin.Begin);
-        //        return formatter.Deserialize(objectStream) as ConcurrentBag<T>;
-        //    }
-        //}
 
-        public DamageAnalysisService(IMongoService mongoService, ILogger<DamageAnalysisService> logger,
-                                IOptions<ServiceUrls> options)
-        {
-            _mongoService = mongoService ??
-               throw new ArgumentNullException(nameof(mongoService));
-
-            _config = options.Value;
-
-            //this._logger = logger;
-
-            _infos = _mongoService.GetInfos();
-
-            //Damage();
-
-            //创建线程，并启动
-            Thread th = new Thread(new ThreadStart(ThreadMethod));                      
-            th.Start(); 
-        }
 
         private void Damage()
         {
@@ -205,277 +230,343 @@ namespace HFJAPIApplication.services
              * 1. 调用接口获取导弹信息
              *************************/
 
-
             //导弹接口
-            string url = _config.MissileInfo;//http://localhost:5000/nuclearthreatanalysis/missileinfo
-           // _logger.LogInformation("URL:{0}", url);
+            var url = Configuration["ServiceUrls:MissileInfo"];//http://localhost:5000/nuclearthreatanalysis/missileinfo
             try
             {
-                Task<string> s = GetAsyncJson(url);
+                Task<string> s = MyCore.Utils.HttpCli.GetAsyncJson(url);
                 s.Wait();
-                JObject jo = (JObject)Newtonsoft.Json.JsonConvert.DeserializeObject(s.Result);
 
-                dds = new List<MissileVO>();
-                foreach (var obj in jo["return_data"])
-                {
-                    string missileID = obj["missileID"].ToString();
-                    string warHeadNo = obj["warHeadNo"].ToString();
-                    double yield = Double.Parse(obj["yield"].ToString());
-                    double lon = Double.Parse(obj["lon"].ToString());
-                    double lat = Double.Parse(obj["lat"].ToString());
-                    double alt = Double.Parse(obj["alt"].ToString());
-                    double impactTimeUTC = Double.Parse(obj["impactTimeUtc"].ToString());//报错了
-                                                             
-                    double measurement = Double.Parse(obj["measurement"].ToString());
-                    double attackAccuracy = Double.Parse(obj["attackAccuracy"].ToString());
-                    string nonce = obj["nonce"].ToString();
-
-                    //_logger.LogInformation(string.Format("【missileID】：{0},【warHeadNo】：{1}," +
-                    //    "【yield】：{2},【lon】：{3},【lat】：{4},【alt】：{5},,【impactTimeUTC】：{6}",
-
-                   //     missileID, warHeadNo,yield,lon, lat, alt, impactTimeUTC));
-
-                    dds.Add(new MissileVO(missileID, warHeadNo, yield, lon, lat, alt, impactTimeUTC, measurement, attackAccuracy, nonce));
-                }
+                //JObject jo = (JObject)Newtonsoft.Json.JsonConvert.DeserializeObject(s.Result);
+                DD dd = Newtonsoft.Json.JsonConvert.DeserializeObject<DD>(s.Result);
+                dds = Clone(dd.return_data);
 
                 // 按時間戳排序
-                dds.Sort((a, b) => a.impactTimeUTc.CompareTo(b.impactTimeUTc));
+                dds.Sort((a, b) => a.impactTimeUtc.CompareTo(b.impactTimeUtc));
+            }
+            catch (Exception e)
+            {
+                _logger.LogInformation("DD访问接口出错" + e.ToString());
+                //Console.WriteLine(e.Message);
+            }
+            finally
+            {
+                // Console.WriteLine("DD访问接口出错");
+            }
 
+            try
+            {
+                /****************************************
+            * 2.循環計算Info表中的每一條記錄的損傷level
+            ****************************************/
+                lock (_infoLocker)
+                {
+                    foreach (var info in _infos)
+                    {
+                        // 只要井和车
+                        //if (info.platform != "发射井" && info.platform != "发射车")
+                        //    continue;
+
+                        DamageVO damageVO = new DamageVO();
+                        damageVO.launchUnitInfo = new LaunchUnitInfoVO(info.launchUnit, info.warBase, info.brigade, info.missileNo);
+                        damageVO.nonce = Guid.NewGuid().ToString();
+                        damageVO.warBase = info.warBase;
+                        damageVO.platform = info.platform;
+                        damageVO.missileNum = info.missileNum;
+                        damageVO.warZone = info.warZone;
+                        damageVO.combatZone = info.combatZone;
+                        damageVO.platoon = info.platoon;
+                        damageVO.lon = info.lon;
+                        damageVO.lat = info.lat;
+                        damageVO.alt = info.alt;
+                        damageVO.prepareTime = info.prepareTime;
+                        damageVO.id = info._id.ToString();
+                        damageVO.name = info.name;
+                        damageVO.useState = info.useState==null?"未知" : info.useState;
+                        //damageVO.tags = info.tags;
+
+                        if (info.platform.Equals("发射井"))
+                        {
+                            foreach (var dd in dds)
+                            {
+                                dd.alt = 0;// 全部按地爆处理
+
+                                // GetDistance返回单位是：米。
+                                double dis = MyCore.Utils.Translate.GetDistance(dd.lat, dd.lon, info.lat, info.lon);
+                                MyCore.enums.DamageEnumeration result1 = MyCore.enums.DamageEnumeration.Safe;
+                                MyCore.enums.DamageEnumeration result2 = MyCore.enums.DamageEnumeration.Safe;
+                                MyCore.enums.DamageEnumeration result3 = MyCore.enums.DamageEnumeration.Safe;
+                                MyCore.enums.DamageEnumeration result4 = MyCore.enums.DamageEnumeration.Safe;
+                                MyCore.enums.DamageEnumeration result = MyCore.enums.DamageEnumeration.Safe;
+
+                                
+                                // 1.受到冲击波影响？
+                                if (info.shock_wave_01 > 0 && info.shock_wave_02 > 0 && info.shock_wave_03 > 0)
+                                    result1 = MyCore.NuclearAlgorithm.Airblast(dis, dd.yield, dd.alt, info.shock_wave_01, info.shock_wave_02, info.shock_wave_03);
+                                    
+                                // 2.受到热辐射影响？
+                                if (info.thermal_radiation_01 > 0 && info.thermal_radiation_02 > 0 && info.thermal_radiation_03 > 0)
+                                    result2 = MyCore.NuclearAlgorithm.ThermalRadiation(dis, dd.yield, dd.alt, info.thermal_radiation_01, info.thermal_radiation_02, info.thermal_radiation_03);
+                                 
+                                // 3.受到核辐射影响？
+                                if (info.nuclear_radiation_01 > 0 && info.nuclear_radiation_02 > 0 && info.nuclear_radiation_03 > 0)
+                                    result3 = MyCore.NuclearAlgorithm.NuclearRadiation(dis, dd.yield, dd.alt, info.nuclear_radiation_01, info.nuclear_radiation_02, info.nuclear_radiation_03);
+                                    
+                                // 4.受到核电磁脉冲影响？
+                                if (info.nuclear_pulse_01 > 0 && info.nuclear_pulse_02 > 0 && info.nuclear_pulse_03 > 0)
+                                    result4 = MyCore.NuclearAlgorithm.NuclearPulse(dis, dd.yield, dd.alt, info.nuclear_pulse_01, info.nuclear_pulse_02, info.nuclear_pulse_03);
+                                    
+
+                                var result12 = (MyCore.enums.DamageEnumeration)Math.Max(result1.GetHashCode(), result2.GetHashCode());
+                                var result34 = (MyCore.enums.DamageEnumeration)Math.Max(result3.GetHashCode(), result4.GetHashCode());
+                                result = (MyCore.enums.DamageEnumeration)Math.Max(result12.GetHashCode(), result34.GetHashCode());
+
+                                if (result != MyCore.enums.DamageEnumeration.Safe)
+                                {
+                                    // 只记录照成损伤的DD
+                                    damageVO.missileList.Add(new MissileListVO(dd.missileID, dd.impactTimeUtc, (int)result));
+                                }
+                            }
+                            if (damageVO.missileList.Count == 0)
+                            {
+                                damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, MyCore.Utils.Const.TimestampMax, 0));
+                            }
+                            else
+                            {
+                                int preDamageLevel = 0;
+                                int index = 0;
+                                foreach (var missile in damageVO.missileList)
+                                {
+                                    if (preDamageLevel >= 3) break;
+
+                                    
+
+                                    if (index == 0)
+                                    {
+                                        // 第一枚导弹
+                                        damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, missile.ImpactTimeUtc, 0));
+                                        damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(missile.ImpactTimeUtc, MyCore.Utils.Const.TimestampMax, missile.DamageLevel));
+                                        preDamageLevel = missile.DamageLevel;
+                                    }
+                                    else
+                                    {
+                                        int currentDamageLevel = additionTable[preDamageLevel.ToString() + missile.DamageLevel.ToString()];
+                                        //int currentDamageLevel2 = preDamageLevel + missile.DamageLevel;
+                                        //if (currentDamageLevel > 3) currentDamageLevel = 3;
+                                        damageVO.statusTimeRanges[index].EndTimeUtc = missile.ImpactTimeUtc;
+                                        damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(missile.ImpactTimeUtc, MyCore.Utils.Const.TimestampMax, currentDamageLevel));
+                                        preDamageLevel = currentDamageLevel;
+                                    }
+                                    index++;
+                                }
+                            }
+                        }
+                        else if (info.platform.Equals("发射车"))
+                        {
+                            foreach (var dd in dds)
+                            {
+                                dd.alt = 0;// 全部按地爆处理
+
+                                // GetDistance返回单位是：米。
+                                double dis = MyCore.Utils.Translate.GetDistance(dd.lat, dd.lon, info.lat, info.lon);
+
+                                MyCore.enums.DamageEnumeration result1 = MyCore.enums.DamageEnumeration.Safe;
+                                MyCore.enums.DamageEnumeration result2 = MyCore.enums.DamageEnumeration.Safe;
+                                MyCore.enums.DamageEnumeration result3 = MyCore.enums.DamageEnumeration.Safe;
+                                MyCore.enums.DamageEnumeration result4 = MyCore.enums.DamageEnumeration.Safe;
+                                MyCore.enums.DamageEnumeration result = MyCore.enums.DamageEnumeration.Safe;
+
+                                
+                                // 1.受到冲击波影响？
+                                if (info.shock_wave_01 > 0 && info.shock_wave_02 > 0 && info.shock_wave_03 > 0)
+                                    result1 = MyCore.NuclearAlgorithm.Airblast(dis, dd.yield, dd.alt, info.shock_wave_01, info.shock_wave_02, info.shock_wave_03);
+                                    
+                                // 2.受到热辐射影响？
+                                if (info.thermal_radiation_01 > 0 && info.thermal_radiation_02 > 0 && info.thermal_radiation_03 > 0)
+                                    result2 = MyCore.NuclearAlgorithm.ThermalRadiation(dis, dd.yield, dd.alt, info.thermal_radiation_01, info.thermal_radiation_02, info.thermal_radiation_03);
+                                    
+                                // 3.受到核辐射影响？
+                                if (info.nuclear_radiation_01 > 0 && info.nuclear_radiation_02 > 0 && info.nuclear_radiation_03 > 0)
+                                    result3 = MyCore.NuclearAlgorithm.NuclearRadiation(dis, dd.yield, dd.alt, info.nuclear_radiation_01, info.nuclear_radiation_02, info.nuclear_radiation_03);
+                                   
+                                // 4.受到核电磁脉冲影响？
+                                if (info.nuclear_pulse_01 > 0 && info.nuclear_pulse_02 > 0 && info.nuclear_pulse_03 > 0)
+                                    result3 = MyCore.NuclearAlgorithm.NuclearPulse(dis, dd.yield, dd.alt, info.nuclear_pulse_01, info.nuclear_pulse_02, info.nuclear_pulse_03);
+                                    
+                                var result12 = (MyCore.enums.DamageEnumeration)Math.Max(result1.GetHashCode(), result2.GetHashCode());
+                                var result34 = (MyCore.enums.DamageEnumeration)Math.Max(result3.GetHashCode(), result4.GetHashCode());
+                                result = (MyCore.enums.DamageEnumeration)Math.Max(result12.GetHashCode(), result34.GetHashCode());
+
+                                if (result != MyCore.enums.DamageEnumeration.Safe)
+                                {
+                                    // 只记录照成损伤的DD
+                                    damageVO.missileList.Add(new MissileListVO(dd.missileID, dd.impactTimeUtc, (int)result));
+                                }
+                            }
+                            if (damageVO.missileList.Count == 0)
+                            {
+                                damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, MyCore.Utils.Const.TimestampMax, 0));
+                            }
+                            else
+                            {
+                                int preDamageLevel = 0;
+                                int index = 0;
+                                foreach (var missile in damageVO.missileList)
+                                {
+                                    if (preDamageLevel >= 3) break;
+
+                                    if (index == 0)
+                                    {
+                                        // 第一枚导弹
+                                        damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, missile.ImpactTimeUtc, 0));
+                                        damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(missile.ImpactTimeUtc, MyCore.Utils.Const.TimestampMax, missile.DamageLevel));
+                                        preDamageLevel = missile.DamageLevel;
+                                    }
+                                    else
+                                    {
+                                        int currentDamageLevel = additionTable[preDamageLevel.ToString() + missile.DamageLevel.ToString()];
+                                        //int currentDamageLevel = preDamageLevel + missile.DamageLevel;
+                                        //if (currentDamageLevel > 3) currentDamageLevel = 3;
+                                        damageVO.statusTimeRanges[index].EndTimeUtc = missile.ImpactTimeUtc;
+                                        damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(missile.ImpactTimeUtc, MyCore.Utils.Const.TimestampMax, currentDamageLevel));
+                                        preDamageLevel = currentDamageLevel;
+                                    }
+                                    index++;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // add 0715 什么类型都要，只不过不是井和车的不参与计算
+                            damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, MyCore.Utils.Const.TimestampMax, 0));
+                        }
+
+                        // 时间片去重
+                        for (int i = damageVO.statusTimeRanges.Count - 1; i >= 0; i--)
+                        {
+                            if (damageVO.statusTimeRanges[i].StartTimeUtc == damageVO.statusTimeRanges[i].EndTimeUtc)
+                                damageVO.statusTimeRanges.RemoveAt(i);
+                        }
+
+                        _damageVOs.Add(damageVO);
+                    }
+                }
+
+
+
+
+                // 判断“_damageVOs”与“_returnDamageVOs”的“missileList”和“statusTimeRanges”是否有变化？
+                //if (_damageVOs.Count() == _returnDamageVOs.Count())
+                //{
+                //    for (int i = 0; i < _damageVOs.Count(); i++)
+                //    {
+                //        DamageVO previousDamageVO = _returnDamageVOs[i];
+                //        DamageVO currentDamageVO = _damageVOs[i];
+
+                //        if (previousDamageVO.Equals(currentDamageVO))
+                //            currentDamageVO.nonce = previousDamageVO.nonce;
+
+                //    }
+                //}
+
+                foreach (var vo in _returnDamageVOs)
+                {
+                    DamageVO previousDamageVO = vo;
+                    DamageVO currentDamageVO = _damageVOs.Find((DamageVO damage) => damage == vo);
+                    if (currentDamageVO != null)
+                        currentDamageVO.nonce = previousDamageVO.nonce;
+                }
+
+
+                lock (_damageLocker)//锁
+                {
+                    //0715 把8种类型的给_noFilterDamageVOs
+                    _noFilterDamageVOs = Clone(_damageVOs);
+
+                    //0715 把井和车类型的给_returnDamageVOs
+                    _returnDamageVOs.Clear();
+                    foreach (var vo in _damageVOs)
+                    {
+                        if (vo.platform.Equals("发射井") || vo.platform.Equals("发射车"))
+                        {
+                            _returnDamageVOs.Add(vo);
+                        }
+                    }
+                }
+
+
+                //反击时间片
+                Counter();
 
             }
             catch (Exception e)
             {
-                //_logger.LogInformation("DD访问接口出错");
-                Console.WriteLine(e.Message);
+
+                _logger.LogInformation("循環計算Info表中的每一條記錄的損傷level:" + e.ToString());
 
             }
-            finally
+
+
+            // 往7078发
+            try
             {
-               // Console.WriteLine("DD访问接口出错");
+                string json1 = Newtonsoft.Json.JsonConvert.SerializeObject(_returnDamageVOs);
+                //Configuration["PushUrls:damage"]     "http://localhost:7078/receivce/damage"
+                Task<string> s = MyCore.Utils.HttpCli.PostAsyncJson(Configuration["PushUrls:damage"], json1);
+                s.Wait();
             }
-
-            /****************************************
-            * 2.循環計算Info表中的每一條記錄的損傷level
-            ****************************************/
-            //List<DamageVO> damageVOs = new List<DamageVO>();
-            lock (_infoLocker)
+            catch (Exception)
             {
-                foreach (var info in _infos)
-                {
-                    // 只要井和车
-                    //if (info.platform != "发射井" && info.platform != "发射车")
-                    //    continue;
-
-                    DamageVO damageVO = new DamageVO();
-                    damageVO.launchUnitInfo = new LaunchUnitInfoVO(info.launchUnit, info.warBase, info.brigade, info.missileNo);
-                    damageVO.nonce = Guid.NewGuid().ToString();
-                    damageVO.warBase = info.warBase;
-                    damageVO.platform = info.platform;
-                    damageVO.missileNum = info.missileNum;
-                    damageVO.warZone = info.warZone;
-                    damageVO.combatZone = info.combatZone;
-                    damageVO.platoon = info.platoon;
-                    damageVO.lon = info.lon;
-                    damageVO.lat = info.lat;
-                    damageVO.alt = info.alt;
-                    damageVO.prepareTime = info.prepareTime;
-
-                    if (info.platform.Equals("发射井"))
-                    {
-                        foreach (var dd in dds)
-                        {
-                            // GetDistance返回单位是：米。
-                            double dis = MyCore.Utils.Translate.GetDistance(dd.lat, dd.lon, info.lat, info.lon);
-                            // 对《发射井》有影响的是[冲击波]
-                            dd.alt = 0;// 全部按地爆处理
-                            var result = Airblast(dis, dd.yield / 1000, dd.alt * 3.2808399, info.shock_wave_01, info.shock_wave_02, info.shock_wave_03);
-                            if (result != MyCore.enums.DamageEnumeration.Safe)
-                            {
-                                // 只记录照成损伤的DD
-                                damageVO.missileList.Add(new MissileListVO(dd.missileID, dd.impactTimeUTc, (int)result));
-                            }
-                        }
-                        if (damageVO.missileList.Count == 0)
-                        {
-                            damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, MyCore.Utils.Const.TimestampMax, 0));
-                        }
-                        else
-                        {
-                            int preDamageLevel = 0;
-                            foreach (var missile in damageVO.missileList)
-                            {
-                                if (preDamageLevel >= 3) break;
-
-                                int index = damageVO.missileList.IndexOf(missile); //index 为索引值
-
-                                if (index == 0)
-                                {
-                                    // 第一枚导弹
-                                    damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, missile.ImpactTimeUtc, 0));
-                                    damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(missile.ImpactTimeUtc, MyCore.Utils.Const.TimestampMax, missile.DamageLevel));
-                                    preDamageLevel = missile.DamageLevel;
-                                }
-                                else
-                                {
-                                    int currentDamageLevel = preDamageLevel + missile.DamageLevel;
-                                    if (currentDamageLevel > 3) currentDamageLevel = 3;
-                                    damageVO.statusTimeRanges[index].EndTimeUtc = missile.ImpactTimeUtc;
-                                    damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(missile.ImpactTimeUtc, MyCore.Utils.Const.TimestampMax, currentDamageLevel));
-                                    preDamageLevel = currentDamageLevel;
-                                }
-                            }
-                        }
-                    }
-                    else if (info.platform.Equals("发射车"))
-                    {
-
-                        foreach (var dd in dds)
-                        {
-                            // GetDistance返回单位是：米。
-                            double dis = MyCore.Utils.Translate.GetDistance(dd.lat, dd.lon, info.lat, info.lon);
-
-                            dd.alt = 0;// 全部按地爆处理
-
-                            // 对《发射车》有影响的是[ 冲击波 & 光辐射 & 核辐射 & 核电磁脉冲 ] ，取4种损伤最大的
-                            var result1 = Airblast(dis, dd.yield / 1000, dd.alt * 3.2808399, info.shock_wave_01, info.shock_wave_02, info.shock_wave_03);
-                            var result2 = ThermalRadiation(dis, dd.yield / 1000, dd.alt * 3.2808399, info.thermal_radiation_01,
-                                                            info.thermal_radiation_02, info.thermal_radiation_03);
-                            var result3 = NuclearRadiation(dis, dd.yield / 1000, info.alt * 3.2808399, info.nuclear_radiation_01,
-                                                            info.nuclear_radiation_02, info.nuclear_radiation_03);
-                            var result4 = NuclearPulse(dis / 1000, dd.yield, info.alt / 1000, info.nuclear_pulse_01,
-                                                         info.nuclear_pulse_02, info.nuclear_pulse_03);
-                            var result12 = (MyCore.enums.DamageEnumeration)Math.Max(result1.GetHashCode(), result2.GetHashCode());
-                            var result34 = (MyCore.enums.DamageEnumeration)Math.Max(result3.GetHashCode(), result4.GetHashCode());
-
-                            var result = (MyCore.enums.DamageEnumeration)Math.Max(result12.GetHashCode(), result34.GetHashCode());
-
-                            if (result != MyCore.enums.DamageEnumeration.Safe)
-                            {
-                                // 只记录照成损伤的DD
-                                damageVO.missileList.Add(new MissileListVO(dd.missileID, dd.impactTimeUTc, (int)result));
-                            }
-                        }
-                        if (damageVO.missileList.Count == 0)
-                        {
-                            damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, MyCore.Utils.Const.TimestampMax, 0));
-                        }
-                        else
-                        {
-                            int preDamageLevel = 0;
-                            foreach (var missile in damageVO.missileList)
-                            {
-                                if (preDamageLevel >= 3) break;
-
-                                int index = damageVO.missileList.IndexOf(missile); //index 为索引值
-
-                                if (index == 0)
-                                {
-                                    // 第一枚导弹
-                                    damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, missile.ImpactTimeUtc, 0));
-                                    damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(missile.ImpactTimeUtc, MyCore.Utils.Const.TimestampMax, missile.DamageLevel));
-                                    preDamageLevel = missile.DamageLevel;
-                                }
-                                else
-                                {
-                                    int currentDamageLevel = preDamageLevel + missile.DamageLevel;
-                                    if (currentDamageLevel > 3) currentDamageLevel = 3;
-                                    damageVO.statusTimeRanges[index].EndTimeUtc = missile.ImpactTimeUtc;
-                                    damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(missile.ImpactTimeUtc, MyCore.Utils.Const.TimestampMax, currentDamageLevel));
-                                    preDamageLevel = currentDamageLevel;
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // add 0715 什么类型都要，只不过不是井和车的不参与计算
-                        damageVO.statusTimeRanges.Add(new StatusTimeRangesVO(0, MyCore.Utils.Const.TimestampMax, 0));
-                    }
-
-                    // 时间片去重
-                    for (int i = damageVO.statusTimeRanges.Count - 1; i >= 0; i--)
-                    {
-                        if (damageVO.statusTimeRanges[i].StartTimeUtc == damageVO.statusTimeRanges[i].EndTimeUtc)
-                            damageVO.statusTimeRanges.RemoveAt(i);
-                    }
-
-                    _damageVOs.Add(damageVO);
-                }
+                Console.WriteLine("检查7078配置");
             }
 
+            // 往7078发
+            try
+            {
+                string json2 = Newtonsoft.Json.JsonConvert.SerializeObject(_returnCounterVOs);
                 
-
-
-            // 判断“_damageVOs”与“_returnDamageVOs”的“missileList”和“statusTimeRanges”是否有变化？
-            if (_damageVOs.Count() == _returnDamageVOs.Count())
-            {
-                for (int i = 0; i < _damageVOs.Count(); i++)
-                {
-                    DamageVO previousDamageVO = _returnDamageVOs[i];
-                    DamageVO currentDamageVO = _damageVOs[i];
-
-                    if (previousDamageVO.Equals(currentDamageVO))
-                        currentDamageVO.nonce = previousDamageVO.nonce;
-
-                }
+                Task<string> s = MyCore.Utils.HttpCli.PostAsyncJson(Configuration["PushUrls:counter"], json2);
+                s.Wait();
             }
-
-            lock (_damageLocker)//锁
+            catch (Exception)
             {
-                //0715 把8种类型的给_noFilterDamageVOs
-                _noFilterDamageVOs = Clone(_damageVOs);
-
-                //0715 把井和车类型的给_returnDamageVOs
-                _returnDamageVOs.Clear();
-                foreach(var vo in _damageVOs)
-                {
-                    if(vo.platform.Equals("发射井") || vo.platform.Equals("发射车"))
-                    {
-                        _returnDamageVOs.Add(vo);
-                    }
-                }
+                Console.WriteLine("检查7078配置");
             }
 
 
-            //反击时间片
-            Counter();
-               
         }
-        public List<SelectVO> Select(FilterBO bo)
+
+        public List<SelectVO> Select(JObject bo)
         {
+            //int a = 9;
+            //int b = 0;
+            //double c = a / b;
             /*************************************
             * 在_damageVOs中查找
             * {
-                 "基地":["11","12"],用info里的《warBase》
-                 "发射平台":["井","车"],用info里的《platform》
-                 "弹型":["DF-5C"]  用info里的《missileNo》。
+                 "基地":["11","12"],用info里的tags
+                 "发射平台":["井","车"],用info里的tags
+                 "弹型":["DF-5C"]  用info里的tags。
               }
             *************************************/
-            var r = _noFilterDamageVOs;
 
-            //_damageVOs
-            List<SelectVO> selectVOs = new List<SelectVO>();
-
-            for (int i = 0; i < r.Count; i++)
+            try
             {
-                int index1 = 0, index2 = 0, index3 = 0;
-                var damageVO = r.ElementAt(i);
-                //判断当前warBase是否在body的基地数组内
-                //index1 = Array.IndexOf(bo.基地, damageVO.warBase);
-                //index2 = Array.IndexOf(bo.发射平台, damageVO.platform);
+                Dictionary<string, List<string>> body = Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, List<string>>>(bo.ToString());
+                List<InfoBO> ret = _mongoService.FindTargetByTag(body);
 
-                if (bo.基地 == null) index1 = 0;
-                else index1 = Array.IndexOf(bo.基地, damageVO.warBase);
+                var r = _noFilterDamageVOs;
 
-                if (bo.发射平台 == null) index2 = 0;
-                else index2 = Array.IndexOf(bo.发射平台, damageVO.platform);
+                //_damageVOs
+                List<SelectVO> selectVOs = new List<SelectVO>();
 
-                if (bo.弹型 == null) index3 = 0;
-                else index3 = Array.IndexOf(bo.弹型, damageVO.launchUnitInfo.MissileNo);
-
-
-                if (index1 >= 0 && index2 >= 0 && index3 >= 0)
+                for (int i = 0; i < r.Count; i++)
                 {
+                    var damageVO = r.ElementAt(i);
+
+                    if (ret.Find(s => s._id.ToString() == damageVO.id) == null)
+                        continue;
+
                     SelectVO selectVO = new SelectVO();
 
                     selectVO.launchUnit = damageVO.launchUnitInfo.LaunchUnit;
@@ -490,6 +581,18 @@ namespace HFJAPIApplication.services
                     selectVO.lon = damageVO.lon;
                     selectVO.lat = damageVO.lat;
                     selectVO.alt = damageVO.alt;
+                    selectVO.nonce = damageVO.nonce;
+                    selectVO.decisionTimeUtc = MyCore.Utils.Const.TimestampMax;
+                    selectVO.name = damageVO.name;
+
+                    // 0730 添加了一个decisionTimeUtc，在 _returnCounterVOs里找launchUnit相等的，
+                    // 把 _returnCounterVOs的timerange第一个endtime
+                    // 赋值回来。如果找不到，就写decisionTimeUtc=999
+                    var result = _returnCounterVOs.Find(s => s.launchUnitInfo.LaunchUnit.Equals(selectVO.launchUnit));
+                    if (result != null)
+                    {
+                        selectVO.decisionTimeUtc = result.timeRanges[0].EndTimeUtc;
+                    }
 
                     selectVO.missileList = damageVO.missileList;
                     selectVO.statusTimeRanges = damageVO.statusTimeRanges;
@@ -497,112 +600,39 @@ namespace HFJAPIApplication.services
                     selectVOs.Add(selectVO);
                 }
 
+                return selectVOs;
             }
-
-            return selectVOs;
-        }
-
-
-        private double GetShockWaveRadius(double yield, double ft,double psi)
-        {
-            MyCore.MyAnalyse myAnalyse = new MyCore.MyAnalyse();
-            return myAnalyse.CalcShockWaveRadius(yield,ft, psi);
-        }
-        private double GetNuclearRadiationRadius(double yield, double ft, double rem)
-        {
-            MyCore.MyAnalyse myAnalyse = new MyCore.MyAnalyse();
-            return myAnalyse.CalcNuclearRadiationRadius(yield, ft,rem);
-        }
-        private double GetThermalRadiationRadius(double yield, double ft, double threm)
-        {
-            MyCore.MyAnalyse myAnalyse = new MyCore.MyAnalyse();
-            return myAnalyse.GetThermalRadiationR(yield,ft,threm);
-        }
-        private double GetNuclearPulseRadius(double yield, double ft, double vm)
-        {
-            MyCore.MyAnalyse myAnalyse = new MyCore.MyAnalyse();
-            return myAnalyse.CalcNuclearPulseRadius(yield, ft, vm);
-        }
-        void ThreadMethod()
-        {
-            while (true)
+            catch (Exception e)
             {
+
+                _logger.LogDebug("ExceptionList<SelectVO> Select(JObject bo):" + e.ToString());
+
+            }
+
+            return null;
+        }
+
+        //void ThreadMethod()
+        //{
+        //    while (true)
+        //    {
+        //        Damage();
+        //        //Thread.Sleep(5);//如果不延时，将占用CPU过高  
+        //        Thread.Sleep(_config.Interval);//如果不延时，将占用CPU过高  
+        //    }
+        //}
+        private void Run()
+        {
+            while (!cts.Token.IsCancellationRequested)
+            {
+                // Your stuff goes here.
                 Damage();
-                //Thread.Sleep(5);//如果不延时，将占用CPU过高  
-                Thread.Sleep(_config.Interval);//如果不延时，将占用CPU过高  
+                AreaTemp();
+                //Thread.Sleep(_config.Interval);//如果不延时，将占用CPU过高  
+                Thread.Sleep(Int32.Parse(Configuration["ServiceUrls:Interval"]));//如果不延时，将占用CPU过高  
+
             }
         }
-
-        private static async Task<string> GetAsyncJson(string url)
-        {
-            HttpClient client = new HttpClient();
-            //HttpContent content = new StringContent();
-            //content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            HttpResponseMessage response = await client.GetAsync(url);
-            response.EnsureSuccessStatusCode();
-            string responseBody = await response.Content.ReadAsStringAsync();
-            return responseBody;
-        }
-
-        #region 计算
-        private MyCore.enums.DamageEnumeration Airblast(double dis, double yield, double ft, double psi01, double psi02, double psi03)
-        {
-            // 冲击波
-            double r1 = GetShockWaveRadius(yield, ft, psi01);
-            double r2 = GetShockWaveRadius(yield, ft, psi02);
-            double r3 = GetShockWaveRadius(yield, ft, psi03);
-
-            if (dis <= r3) return MyCore.enums.DamageEnumeration.Destroy;
-            if (dis <= r2) return MyCore.enums.DamageEnumeration.Heavy;
-            if (dis <= r1) return MyCore.enums.DamageEnumeration.Light;
-
-            return MyCore.enums.DamageEnumeration.Safe;
-        }
-        private MyCore.enums.DamageEnumeration ThermalRadiation(double dis, double yield, double ft, double cal01, double cal02, double cal03)
-        {
-            // 光辐射 =》营区、发射车、人员
-
-            double r1 = GetThermalRadiationRadius(yield, ft, cal01);
-            double r2 = GetThermalRadiationRadius(yield, ft, cal02);
-            double r3 = GetThermalRadiationRadius(yield, ft, cal03);
-
-            if (dis <= r3) return MyCore.enums.DamageEnumeration.Destroy;
-            if (dis <= r2) return MyCore.enums.DamageEnumeration.Heavy;
-            if (dis <= r1) return MyCore.enums.DamageEnumeration.Light;
-
-            return MyCore.enums.DamageEnumeration.Safe;
-        }
-        private MyCore.enums.DamageEnumeration NuclearRadiation(double dis, double yield, double ft,
-                                                    double rem01, double rem02, double rem03)
-        {
-            // 核辐射 =》发射场、发射车、人员
-
-            double r1 = GetNuclearRadiationRadius(yield, ft, rem01);
-            double r2 = GetNuclearRadiationRadius(yield, ft, rem02);
-            double r3 = GetNuclearRadiationRadius(yield, ft, rem03);
-
-            if (dis <= r3) return MyCore.enums.DamageEnumeration.Destroy;
-            if (dis <= r2) return MyCore.enums.DamageEnumeration.Heavy;
-            if (dis <= r1) return MyCore.enums.DamageEnumeration.Light;
-
-            return MyCore.enums.DamageEnumeration.Safe;
-        }
-        private MyCore.enums.DamageEnumeration NuclearPulse(double dis, double yield, double km, double vm01, double vm02, double vm03)
-        {
-            // 核电磁脉冲 =》中心库、待机库、通信站、发射车
-
-            double r1 = GetNuclearPulseRadius(yield, km, vm01);
-            double r2 = GetNuclearPulseRadius(yield, km, vm02);
-            double r3 = GetNuclearPulseRadius(yield, km, vm03);
-
-            if (dis <= r3) return MyCore.enums.DamageEnumeration.Destroy;
-            if (dis <= r2) return MyCore.enums.DamageEnumeration.Heavy;
-            if (dis <= r1) return MyCore.enums.DamageEnumeration.Light;
-
-            return MyCore.enums.DamageEnumeration.Safe;
-        }
-        #endregion
-
         public List<T> Clone<T>(List<T> inputList)
         {
             BinaryFormatter Formatter = new BinaryFormatter(null, new StreamingContext(StreamingContextStates.Clone));
@@ -612,6 +642,329 @@ namespace HFJAPIApplication.services
             var outList = Formatter.Deserialize(stream) as List<T>;
             stream.Close();
             return outList;
+        }
+
+        // 2020-07-27
+        public List<DamageAreaMergeVO> Merge()
+        {
+            double psi = 1; double rem = 100; double calcm = 1.9; double vm = 200;
+            GetLimits(ref psi, ref rem, ref calcm, ref vm);
+
+            // 读取mongo数据库中HB库，用于仿真模拟
+            List<DamageAreaMergeVO> damageMergeVOs = new List<DamageAreaMergeVO>();
+
+            List<MissileVO> dds = new List<MissileVO>();
+            //导弹接口
+            string url = Configuration["ServiceUrls:MissileInfo"];//http://localhost:5000/nuclearthreatanalysis/missileinfo
+            // _logger.LogInformation("URL:{0}", url);
+            try
+            {
+                Task<string> s = MyCore.Utils.HttpCli.GetAsyncJson(url);
+                s.Wait();
+
+                //JObject jo = (JObject)Newtonsoft.Json.JsonConvert.DeserializeObject(s.Result);
+                DD dd = Newtonsoft.Json.JsonConvert.DeserializeObject<DD>(s.Result);
+                dds = Clone(dd.return_data);
+            }
+            catch (Exception e)
+            {
+                //Console.WriteLine(e.Message);
+            }
+
+            Geometry geom_02 = null;
+            Geometry geom_03 = null;
+            Geometry geom_04 = null;
+            Geometry geom_05 = null;
+
+            foreach (var dd in dds)
+            {
+                double lon = dd.lon;
+                double lat = dd.lat;
+                double alt = dd.alt;
+                double yield = dd.yield;
+
+                if (geom_02 == null)
+                    geom_02 = MyCore.NuclearAlgorithm.GetNuclearRadiationGeometry(lon, lat, yield, alt, rem);
+                else
+                    geom_02 = geom_02.Union(MyCore.NuclearAlgorithm.GetNuclearRadiationGeometry(lon, lat, yield, alt, rem));
+
+                if (geom_03 == null)
+                    geom_03 = MyCore.NuclearAlgorithm.GetShockWaveGeometry(lon, lat, yield, alt, psi);
+                else
+                    geom_03 = geom_03.Union(MyCore.NuclearAlgorithm.GetShockWaveGeometry(lon, lat, yield, alt, psi));
+
+                if (geom_04 == null)
+                    geom_04 = MyCore.NuclearAlgorithm.GetThermalRadiationGeometry(lon, lat, yield, alt, calcm);
+                else
+                    geom_04 = geom_04.Union(MyCore.NuclearAlgorithm.GetThermalRadiationGeometry(lon, lat, yield, alt, calcm));
+
+                if (geom_05 == null)
+                    geom_05 = MyCore.NuclearAlgorithm.GetNuclearPulseGeometry(lon, lat, yield, alt, vm);
+                else
+                    geom_05 = geom_05.Union(MyCore.NuclearAlgorithm.GetNuclearPulseGeometry(lon, lat, yield, alt, vm));
+            }
+
+            damageMergeVOs.Add(new DamageAreaMergeVO("早期核辐射", MyCore.Utils.Translate.Geometry2GeoJson(geom_02), rem, "rem"));
+            damageMergeVOs.Add(new DamageAreaMergeVO("冲击波", MyCore.Utils.Translate.Geometry2GeoJson(geom_03), psi, "psi"));
+            damageMergeVOs.Add(new DamageAreaMergeVO("光辐射", MyCore.Utils.Translate.Geometry2GeoJson(geom_04), calcm, "cal/cm²"));
+            damageMergeVOs.Add(new DamageAreaMergeVO("核电磁脉冲", MyCore.Utils.Translate.Geometry2GeoJson(geom_05), vm, "v/m"));
+
+            return damageMergeVOs;
+        }
+
+        /// <summary>
+        /// 纯粹是为了测试用的
+        /// </summary>
+        /// <returns></returns>
+        private string AreaTemp()
+        {
+            double test_need_r = 0;
+
+            double psi = 1; double rem = 100; double calcm = 1.9; double vm = 200;
+            GetLimits(ref psi, ref rem, ref calcm, ref vm);
+
+            // 读取mongo数据库中HB库，用于仿真模拟
+            List<DamageAreaMergeVO> damageMergeVOs = new List<DamageAreaMergeVO>();
+
+            List<MissileVO> dds = new List<MissileVO>();
+            //导弹接口
+            string url = Configuration["ServiceUrls:MissileInfo"];//http://localhost:5000/nuclearthreatanalysis/missileinfo
+            // _logger.LogInformation("URL:{0}", url);
+            try
+            {
+                Task<string> s = MyCore.Utils.HttpCli.GetAsyncJson(url);
+                s.Wait();
+
+                //JObject jo = (JObject)Newtonsoft.Json.JsonConvert.DeserializeObject(s.Result);
+                DD dd = Newtonsoft.Json.JsonConvert.DeserializeObject<DD>(s.Result);
+
+                // 如果dd接口是空，没有dd，返回空
+                if (dd.return_data.Count == 0) return "";
+
+                dds = Clone(dd.return_data);
+            }
+            catch (Exception e)
+            {
+                //Console.WriteLine(e.Message);
+            }
+
+            foreach (var dd in dds)
+            {
+                double lon = dd.lon;
+                double lat = dd.lat;
+                double alt = dd.alt;
+                double yield = dd.yield;
+                test_need_r = MyCore.NuclearAlgorithm.GetNuclearPulseRadius(yield, alt, vm);
+            }
+
+            // 往7078发
+            try
+            {
+                string json1 = test_need_r.ToString();
+                Task<string> s = MyCore.Utils.HttpCli.PostAsyncJson(Configuration["PushUrls:area"], json1);
+                s.Wait();
+            }
+            catch (Exception)
+            {
+                Console.WriteLine("检查7078配置");
+            }
+
+            return "AreaTemp";
+        }
+
+        public string Area()
+        {
+            double test_need_r = 0;
+
+            double psi = 1; double rem = 100; double calcm = 1.9; double vm = 200;
+            GetLimits(ref psi, ref rem, ref calcm, ref vm);
+
+            // 读取mongo数据库中HB库，用于仿真模拟
+            List<DamageAreaMergeVO> damageMergeVOs = new List<DamageAreaMergeVO>();
+
+            List<MissileVO> dds = new List<MissileVO>();
+            //导弹接口
+            string url = Configuration["ServiceUrls:MissileInfo"];//http://localhost:5000/nuclearthreatanalysis/missileinfo
+            // _logger.LogInformation("URL:{0}", url);
+            try
+            {
+                Task<string> s = MyCore.Utils.HttpCli.GetAsyncJson(url);
+                s.Wait();
+
+                //JObject jo = (JObject)Newtonsoft.Json.JsonConvert.DeserializeObject(s.Result);
+                DD dd = Newtonsoft.Json.JsonConvert.DeserializeObject<DD>(s.Result);
+
+                // 如果dd接口是空，没有dd，返回空
+                if (dd.return_data.Count == 0) return "";
+
+                dds = Clone(dd.return_data);
+            }
+            catch (Exception e)
+            {
+                //Console.WriteLine(e.Message);
+            }
+
+            Geometry geom_02 = null;
+            Geometry geom_03 = null;
+            Geometry geom_04 = null;
+            Geometry geom_05 = null;
+
+            foreach (var dd in dds)
+            {
+                double lon = dd.lon;
+                double lat = dd.lat;
+                double alt = dd.alt;
+                double yield = dd.yield;
+                test_need_r = MyCore.NuclearAlgorithm.GetNuclearPulseRadius(yield, alt, vm);
+
+                if (geom_02 == null)
+                    geom_02 = MyCore.NuclearAlgorithm.GetNuclearRadiationGeometry(lon, lat, yield, alt, rem);
+                else
+                    geom_02 = geom_02.Union(MyCore.NuclearAlgorithm.GetNuclearRadiationGeometry(lon, lat, yield, alt, rem));
+
+                if (geom_03 == null)
+                    geom_03 = MyCore.NuclearAlgorithm.GetShockWaveGeometry(lon, lat, yield, alt, psi);
+                else
+                    geom_03 = geom_03.Union(MyCore.NuclearAlgorithm.GetShockWaveGeometry(lon, lat, yield, alt, psi));
+
+                if (geom_04 == null)
+                    geom_04 = MyCore.NuclearAlgorithm.GetThermalRadiationGeometry(lon, lat, yield, alt, calcm);
+                else
+                    geom_04 = geom_04.Union(MyCore.NuclearAlgorithm.GetThermalRadiationGeometry(lon, lat, yield, alt, calcm));
+
+                if (geom_05 == null)
+                    geom_05 = MyCore.NuclearAlgorithm.GetNuclearPulseGeometry(lon, lat, yield, alt, vm);
+                else
+                    geom_05 = geom_05.Union(MyCore.NuclearAlgorithm.GetNuclearPulseGeometry(lon, lat, yield, alt, vm));
+            }
+
+            Geometry newGeom = geom_02.Union(geom_03).Union(geom_04).Union(geom_05);
+
+            _returnArea = MyCore.Utils.Translate.Geometry2GeoJson(newGeom);
+
+            // 往7078发
+            try
+            {
+                string json1 = test_need_r.ToString();
+                Task<string> s = MyCore.Utils.HttpCli.PostAsyncJson(Configuration["PushUrls:area"], json1);
+                s.Wait();
+            }
+            catch (Exception)
+            {
+                Console.WriteLine("检查7078配置");
+            }
+
+            return _returnArea;
+        }
+
+        public List<DamageMultiVO> Multi()
+        {
+            double psi = 1; double rem = 100; double calcm = 1.9; double vm = 200;
+            GetLimits(ref psi, ref rem, ref calcm, ref vm);
+
+            List<DamageMultiVO> damageMultiVOs = new List<DamageMultiVO>();
+
+            List<MissileVO> dds = new List<MissileVO>();
+            //导弹接口
+            string url = Configuration["ServiceUrls:MissileInfo"];//http://localhost:5000/nuclearthreatanalysis/missileinfo
+            // _logger.LogInformation("URL:{0}", url);
+            try
+            {
+                Task<string> s = MyCore.Utils.HttpCli.GetAsyncJson(url);
+                s.Wait();
+
+                //JObject jo = (JObject)Newtonsoft.Json.JsonConvert.DeserializeObject(s.Result);
+                DD dd = Newtonsoft.Json.JsonConvert.DeserializeObject<DD>(s.Result);
+                dds = Clone(dd.return_data);
+            }
+            catch (Exception e)
+            {
+                //Console.WriteLine(e.Message);
+            }
+            List<MultiVO> multiVOs_01 = new List<MultiVO>();
+            List<MultiVO> multiVOs_02 = new List<MultiVO>();
+            List<MultiVO> multiVOs_03 = new List<MultiVO>();
+            List<MultiVO> multiVOs_04 = new List<MultiVO>();
+            List<MultiVO> multiVOs_05 = new List<MultiVO>();
+
+            foreach (var dd in dds)
+            {
+                double lon = dd.lon;
+                double lat = dd.lat;
+                double alt = dd.alt;
+                double yield = dd.yield;
+
+                string id = dd.missileID;
+
+                double r = MyCore.NuclearAlgorithm.GetNuclearRadiationRadius(yield, alt, rem);
+                multiVOs_02.Add(new MultiVO(id, Math.Round(r, 2), lon, lat, alt, rem, "rem"));
+
+                r = MyCore.NuclearAlgorithm.GetShockWaveRadius(yield, alt, psi);
+                multiVOs_03.Add(new MultiVO(id, Math.Round(r, 2), lon, lat, alt, psi, "psi"));
+
+                r = MyCore.NuclearAlgorithm.GetThermalRadiationRadius(yield, alt, calcm);
+                multiVOs_04.Add(new MultiVO(id, Math.Round(r, 2), lon, lat, alt, calcm, "cal/cm²"));
+
+                // 吨不变；米变千米
+                r = MyCore.NuclearAlgorithm.GetNuclearPulseRadius(yield, alt, vm);
+
+                // 上一步r的返回值是千米，所以要变成米
+                multiVOs_05.Add(new MultiVO(id, Math.Round(r * 1000, 2), lon, lat, alt, vm, "v/m"));
+
+            }
+            damageMultiVOs.Add(new DamageMultiVO("早期核辐射", multiVOs_02));
+            damageMultiVOs.Add(new DamageMultiVO("冲击波", multiVOs_03));
+            damageMultiVOs.Add(new DamageMultiVO("光辐射", multiVOs_04));
+            damageMultiVOs.Add(new DamageMultiVO("核电磁脉冲", multiVOs_05));
+
+            return damageMultiVOs;
+        }
+        public List<DamageResultVO> MissileMulti(MissileBO bo)
+        {
+            double psi = 1; double rem = 100; double calcm = 1.9; double vm = 200;
+            GetLimits(ref psi, ref rem, ref calcm, ref vm);
+
+            var nuclearradiation = MyCore.NuclearAlgorithm.GetNuclearRadiationRadius(bo.Yield, bo.Alt, rem);
+            var airblast = MyCore.NuclearAlgorithm.GetShockWaveRadius(bo.Yield, bo.Alt, psi);
+            var thermalradiation = MyCore.NuclearAlgorithm.GetThermalRadiationRadius(bo.Yield, bo.Alt, calcm);
+            var nuclearpulse = MyCore.NuclearAlgorithm.GetNuclearPulseRadius(bo.Yield, bo.Alt, vm);
+
+
+            List<DamageResultVO> list = new List<DamageResultVO>();
+            list.Add(
+                new DamageResultVO("早期核辐射", nuclearradiation, bo.Lon, bo.Lat, bo.Alt, rem, "rem"));
+            list.Add(
+                new DamageResultVO("冲击波", airblast, bo.Lon, bo.Lat, bo.Alt, psi, "psi"));
+            list.Add(
+                new DamageResultVO("光辐射", thermalradiation, bo.Lon, bo.Lat, bo.Alt, calcm, "cal/cm²"));
+            list.Add(
+                new DamageResultVO("核电磁脉冲", nuclearpulse * 1000, bo.Lon, bo.Lat, bo.Alt, vm, "v/m"));
+
+            return list;
+        }
+
+        public MissileAreaVO MissileArea(MissileBO bo)
+        {
+            double psi = 1; double rem = 100; double calcm = 1.9; double vm = 200;
+            GetLimits(ref psi, ref rem, ref calcm, ref vm);
+
+            var r = MyCore.NuclearAlgorithm.GetNuclearPulseRadius(bo.Yield, bo.Alt, vm);
+            return new MissileAreaVO(r, bo.Lon, bo.Lat, bo.Alt);
+        }
+
+        private void GetLimits(ref double psi, ref double rem, ref double calcm, ref double vm)
+        {
+            var rule = _mongoService.QueryRule("冲击波");
+            if (rule != null) psi = rule.limits;
+
+            rule = _mongoService.QueryRule("早期核辐射");
+            if (rule != null) rem = rule.limits;
+
+            rule = _mongoService.QueryRule("光辐射");
+            if (rule != null) calcm = rule.limits;
+
+            rule = _mongoService.QueryRule("核电磁脉冲");
+            if (rule != null) vm = rule.limits;
         }
     }
 }

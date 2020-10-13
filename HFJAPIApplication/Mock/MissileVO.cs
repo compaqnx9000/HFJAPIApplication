@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 
 namespace HFJAPIApplication.Mock
 {
+    [Serializable]
     public class MissileVO
     {
         public MissileVO(string missileID, string warHeadNo, double yield, double lon, double lat, double alt, double impactTimeUTc, double measurement, double attackAccuracy,string nonce)
@@ -15,7 +16,7 @@ namespace HFJAPIApplication.Mock
             this.lon = lon;
             this.lat = lat;
             this.alt = alt;
-            this.impactTimeUTc = impactTimeUTc;
+            this.impactTimeUtc = impactTimeUTc;
             this.measurement = measurement;
             this.attackAccuracy = attackAccuracy;
             this.nonce = nonce;
@@ -27,7 +28,7 @@ namespace HFJAPIApplication.Mock
         public double lon { get; set; }
         public double lat { get; set; }
         public double alt { get; set; }
-        public double impactTimeUTc { get; set; }
+        public double impactTimeUtc { get; set; }
         public double measurement { get; set; }
         public double attackAccuracy { get; set; }
         public string nonce { get; set; }

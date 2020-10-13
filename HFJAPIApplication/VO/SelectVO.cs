@@ -27,5 +27,9 @@ namespace HFJAPIApplication.VO
         public double alt { get; set; }
         public List<StatusTimeRangesVO> statusTimeRanges { get; set; }
         public List<MissileListVO> missileList { get; set; }
+
+        public string nonce { get; set; }
+        public double decisionTimeUtc { get; set; }//0717=>0730改为decisionTimeUtc
+        public string name { get; set; }//0818 add
     }
 }
